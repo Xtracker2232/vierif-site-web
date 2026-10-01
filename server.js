@@ -8,6 +8,7 @@ const mindee = require('mindee');
 
 sharp.cache(false);
 
+// ========== CONFIG ==========
 const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 
@@ -15,11 +16,16 @@ if (!process.env.DATABASE_URL) { console.error('❌ DATABASE_URL manquante.'); p
 if (!process.env.MINDEE_API_KEY) { console.error('❌ MINDEE_API_KEY manquante.'); process.exit(1); }
 if (!process.env.MINDEE_MODEL_ID) { console.error('❌ MINDEE_MODEL_ID manquante.'); process.exit(1); }
 
-// ========== MINDEE V2 (nouvelle méthode) ==========
-const mindeeClient = new mindee.Client({ apiKey: process.env.MINDEE_API_KEY });
+// ========== MINDEE V1 ==========
+const mindeeClient = new mindee.v1.Client({ apiKey: process.env.MINDEE_API_KEY });
 const MINDEE_MODEL_ID = process.env.MINDEE_MODEL_ID;
+const MINDEE_ACCOUNT_NAME = process.env.MINDEE_ACCOUNT_NAME || '';
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+// ========== POSTGRES ==========
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
 
 (async () => {
   try {
@@ -34,16 +40,22 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
   } catch (err) { console.error('❌ Erreur création table :', err.message); }
 })();
 
+// ========== UPLOAD ==========
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: UPLOAD_DIR,
     filename: (req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`)
   }),
   limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => { if (file.mimetype.startsWith('image/')) cb(null, true); else cb(new Error('Images uniquement')); }
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Images uniquement'));
+  }
 });
 
+// ========== LYCEES ==========
 const LYCEES = [
   { nom: 'Léon Chiris', variantes: ['leon chiris', 'leonchiris', 'chiris'] },
   { nom: 'Amiral de Grasse', variantes: ['amiral de grasse', 'amiral grasse', 'grasse'] },
@@ -54,26 +66,36 @@ function normaliser(texte) {
   if (!texte) return '';
   return texte.toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 }
+
 function trouverLycee(texte) {
   const t = normaliser(texte);
   for (const l of LYCEES) for (const v of l.variantes) if (t.includes(normaliser(v))) return l.nom;
   return null;
 }
 
+// ========== APP ==========
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// --- Route 1 : vérifier le code ---
 app.post('/api/verifier-code', async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ erreur: 'Aucun code fourni' });
   try {
-    const { rows } = await pool.query('SELECT * FROM verifications WHERE code = $1 AND valide = 0', [code.toUpperCase().trim()]);
+    const { rows } = await pool.query(
+      'SELECT * FROM verifications WHERE code = $1 AND valide = 0',
+      [code.toUpperCase().trim()]
+    );
     if (!rows[0]) return res.status(400).json({ erreur: 'Code invalide ou déjà utilisé.' });
     res.json({ succes: true });
-  } catch (err) { console.error('Erreur SQL:', err); res.status(500).json({ erreur: 'Erreur serveur.' }); }
+  } catch (err) {
+    console.error('Erreur SQL:', err);
+    res.status(500).json({ erreur: 'Erreur serveur.' });
+  }
 });
 
+// --- Route 2 : upload photo + analyse Mindee ---
 app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ erreur: 'Aucun code fourni' });
@@ -81,57 +103,108 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
 
   let imageOptimisee = null;
   try {
-    const { rows } = await pool.query('SELECT * FROM verifications WHERE code = $1 AND valide = 0', [code.toUpperCase().trim()]);
-    if (!rows[0]) { try { fs.unlinkSync(req.file.path); } catch (e) {} return res.status(400).json({ erreur: 'Code invalide.' }); }
+    const { rows } = await pool.query(
+      'SELECT * FROM verifications WHERE code = $1 AND valide = 0',
+      [code.toUpperCase().trim()]
+    );
+    if (!rows[0]) {
+      try { fs.unlinkSync(req.file.path); } catch (e) {}
+      return res.status(400).json({ erreur: 'Code invalide.' });
+    }
 
+    // Optimisation de l'image
     const baseName = path.parse(req.file.filename).name;
     imageOptimisee = path.join(UPLOAD_DIR, `opt-${baseName}.jpg`);
-    await sharp(req.file.path).rotate().resize({ width: 2000, withoutEnlargement: true }).jpeg({ quality: 85 }).toFile(imageOptimisee);
+    await sharp(req.file.path)
+      .rotate()
+      .resize({ width: 2000, withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toFile(imageOptimisee);
 
-    console.log(`📤 Envoi à Mindee V2 (code ${code})...`);
+    console.log(`📤 Envoi à Mindee (code ${code})...`);
 
     let lyceeTrouve = null;
     let erreurMindee = false;
 
     try {
-      // ===== NOUVELLE MÉTHODE MINDEE V2 =====
+      // ===== MINDEE V1 =====
       const inputSource = new mindee.PathInput({ inputPath: imageOptimisee });
-      
-      // Paramètres du modèle
-      const modelParams = {
-        modelId: MINDEE_MODEL_ID,
-      };
-
-      // Appel à l'API V2 avec ExtractionResponse
-      const response = await mindeeClient.enqueueAndGetResult(
-        mindee.product.Extraction,  // Type de produit
-        inputSource,
-        modelParams
+      const customEndpoint = mindeeClient.createEndpoint(
+        MINDEE_MODEL_ID,
+        MINDEE_ACCOUNT_NAME || undefined,
+        '1'
       );
 
-      // Récupérer toutes les données extraites
-      const toutesLesValeurs = JSON.stringify(response.inference);
+      const response = await mindeeClient.enqueueAndParse(
+        mindee.v1.product.GeneratedV1,
+        inputSource,
+        { endpoint: customEndpoint }
+      );
+
+      const doc = response.document;
+      const toutesLesValeurs = JSON.stringify(doc);
       console.log(`📄 Réponse Mindee (${code}) :`, toutesLesValeurs.slice(0, 500));
-      
-      lyceeTrouve = trouverLycee(toutesLesValeurs);
+
+      // Extraction du champ etablissement_scolaire (plusieurs chemins possibles)
+      let valeurExtraite = null;
+      try {
+        const chemins = [
+          doc?.inference?.prediction?.etablissement_scolaire,
+          doc?.prediction?.etablissement_scolaire,
+          doc?.fields?.etablissement_scolaire,
+          doc?.inference?.prediction?.fields?.etablissement_scolaire,
+        ];
+        for (const champ of chemins) {
+          if (!champ) continue;
+          if (typeof champ === 'string') { valeurExtraite = champ; break; }
+          if (champ.value) { valeurExtraite = champ.value; break; }
+          if (Array.isArray(champ.values) && champ.values[0]) {
+            valeurExtraite = champ.values[0].content || champ.values[0].value;
+            break;
+          }
+        }
+      } catch (e) {
+        console.error('Erreur extraction champ:', e.message);
+      }
+
+      console.log(`🏫 Lycée extrait :`, valeurExtraite);
+
+      if (valeurExtraite) {
+        lyceeTrouve = trouverLycee(valeurExtraite);
+      }
+      if (!lyceeTrouve) {
+        lyceeTrouve = trouverLycee(toutesLesValeurs);
+      }
     } catch (mindeeErr) {
       console.error('❌ Erreur Mindee :', mindeeErr.message);
       erreurMindee = true;
     }
 
     if (lyceeTrouve) {
-      await pool.query('UPDATE verifications SET valide = 1, lycee = $1 WHERE code = $2', [lyceeTrouve, code.toUpperCase().trim()]);
+      await pool.query(
+        'UPDATE verifications SET valide = 1, lycee = $1 WHERE code = $2',
+        [lyceeTrouve, code.toUpperCase().trim()]
+      );
       try { fs.unlinkSync(req.file.path); } catch (e) {}
       try { fs.unlinkSync(imageOptimisee); } catch (e) {}
       console.log(`✅ Lycée reconnu : ${lyceeTrouve}`);
-      return res.json({ succes: true, message: `✅ Carnet reconnu (${lyceeTrouve}). Tu seras vérifié dans quelques secondes.` });
+      return res.json({
+        succes: true,
+        message: `✅ Carnet reconnu (${lyceeTrouve}). Tu seras vérifié dans quelques secondes.`,
+      });
     }
 
-    await pool.query('UPDATE verifications SET photo_path = $1, a_moderer = 1, lycee = $2 WHERE code = $3',
-      [req.file.path, erreurMindee ? 'Erreur analyse' : 'En attente', code.toUpperCase().trim()]);
+    await pool.query(
+      'UPDATE verifications SET photo_path = $1, a_moderer = 1, lycee = $2 WHERE code = $3',
+      [req.file.path, erreurMindee ? 'Erreur analyse' : 'En attente', code.toUpperCase().trim()]
+    );
     try { fs.unlinkSync(imageOptimisee); } catch (e) {}
     console.log(`⚠️ Envoi en modération pour ${code}`);
-    return res.json({ succes: true, moderation: true, message: '📸 Photo reçue. Un modérateur va vérifier ton carnet manuellement.' });
+    return res.json({
+      succes: true,
+      moderation: true,
+      message: '📸 Photo reçue. Un modérateur va vérifier ton carnet manuellement.',
+    });
   } catch (err) {
     console.error('❌ Erreur générale :', err);
     try { fs.unlinkSync(req.file.path); } catch (e) {}
@@ -140,16 +213,27 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   }
 });
 
+// --- Route 3 : exposer une photo au bot ---
 app.get('/photo/:code', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT photo_path FROM verifications WHERE code = $1', [req.params.code.toUpperCase().trim()]);
+    const { rows } = await pool.query(
+      'SELECT photo_path FROM verifications WHERE code = $1',
+      [req.params.code.toUpperCase().trim()]
+    );
     if (!rows[0] || !rows[0].photo_path) return res.status(404).send('Photo introuvable');
     const filePath = rows[0].photo_path;
     if (!fs.existsSync(filePath)) return res.status(404).send('Fichier introuvable');
     res.sendFile(filePath);
-  } catch (err) { console.error('Erreur /photo :', err); res.status(500).send('Erreur serveur'); }
+  } catch (err) {
+    console.error('Erreur /photo :', err);
+    res.status(500).send('Erreur serveur');
+  }
 });
 
+// --- Route santé ---
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-app.listen(PORT, '0.0.0.0', () => { console.log(`🌐 Site en ligne sur le port ${PORT}`); });
+// ========== DEMARRAGE ==========
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🌐 Site en ligne sur le port ${PORT}`);
+});
