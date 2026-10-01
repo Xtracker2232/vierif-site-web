@@ -15,10 +15,9 @@ if (!process.env.DATABASE_URL) { console.error('❌ DATABASE_URL manquante.'); p
 if (!process.env.MINDEE_API_KEY) { console.error('❌ MINDEE_API_KEY manquante.'); process.exit(1); }
 if (!process.env.MINDEE_MODEL_ID) { console.error('❌ MINDEE_MODEL_ID manquante.'); process.exit(1); }
 
-// Mindee V1 Client (nouvelle méthode)
-const mindeeClient = new mindee.v1.Client({ apiKey: process.env.MINDEE_API_KEY });
+// ========== MINDEE V2 (nouvelle méthode) ==========
+const mindeeClient = new mindee.Client({ apiKey: process.env.MINDEE_API_KEY });
 const MINDEE_MODEL_ID = process.env.MINDEE_MODEL_ID;
-const MINDEE_ACCOUNT_NAME = process.env.MINDEE_ACCOUNT_NAME || '';
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
@@ -89,24 +88,31 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
     imageOptimisee = path.join(UPLOAD_DIR, `opt-${baseName}.jpg`);
     await sharp(req.file.path).rotate().resize({ width: 2000, withoutEnlargement: true }).jpeg({ quality: 85 }).toFile(imageOptimisee);
 
-    console.log(`📤 Envoi à Mindee (code ${code})...`);
+    console.log(`📤 Envoi à Mindee V2 (code ${code})...`);
 
     let lyceeTrouve = null;
     let erreurMindee = false;
 
     try {
-      // Nouvelle méthode Mindee : GeneratedV1 + createEndpoint
+      // ===== NOUVELLE MÉTHODE MINDEE V2 =====
       const inputSource = new mindee.PathInput({ inputPath: imageOptimisee });
-      const customEndpoint = mindeeClient.createEndpoint(MINDEE_MODEL_ID, MINDEE_ACCOUNT_NAME);
+      
+      // Paramètres du modèle
+      const modelParams = {
+        modelId: MINDEE_MODEL_ID,
+      };
 
-      const response = await mindeeClient.enqueueAndParse(
-        mindee.v1.product.GeneratedV1,
+      // Appel à l'API V2 avec ExtractionResponse
+      const response = await mindeeClient.enqueueAndGetResult(
+        mindee.product.Extraction,  // Type de produit
         inputSource,
-        { endpoint: customEndpoint }
+        modelParams
       );
 
-      const toutesLesValeurs = JSON.stringify(response.document);
+      // Récupérer toutes les données extraites
+      const toutesLesValeurs = JSON.stringify(response.inference);
       console.log(`📄 Réponse Mindee (${code}) :`, toutesLesValeurs.slice(0, 500));
+      
       lyceeTrouve = trouverLycee(toutesLesValeurs);
     } catch (mindeeErr) {
       console.error('❌ Erreur Mindee :', mindeeErr.message);
