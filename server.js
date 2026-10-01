@@ -11,7 +11,13 @@ sharp.cache(false);
 const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 
-if (!process.env.DATABASE_URL) { console.error('❌ DATABASE_URL manquante.'); process.exit(1); }
+if (!process.env.DATABASE_URL) {
+  console.error('❌ DATABASE_URL manquante.');
+  process.exit(1);
+}
+
+console.log('🔧 Serveur de vérification initialisé');
+console.log(`📁 Dossier uploads : ${UPLOAD_DIR}`);
 
 // ========== POSTGRES ==========
 const pool = new Pool({
@@ -27,8 +33,11 @@ const pool = new Pool({
         photo_path TEXT, a_moderer INTEGER DEFAULT 0, lycee TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+    await pool.query('ALTER TABLE verifications ADD COLUMN IF NOT EXISTS lycee TEXT');
     console.log('✅ Table verifications prête.');
-  } catch (err) { console.error('❌ Erreur création table :', err.message); }
+  } catch (err) {
+    console.error('❌ Erreur création table :', err.message);
+  }
 })();
 
 // ========== UPLOAD ==========
@@ -55,15 +64,20 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.post('/api/verifier-code', async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ erreur: 'Aucun code fourni' });
+
   try {
     const { rows } = await pool.query(
       'SELECT * FROM verifications WHERE code = $1 AND valide = 0',
       [code.toUpperCase().trim()]
     );
-    if (!rows[0]) return res.status(400).json({ erreur: 'Code invalide ou déjà utilisé.' });
+
+    if (!rows[0]) {
+      return res.status(400).json({ erreur: 'Code invalide ou déjà utilisé.' });
+    }
+
     res.json({ succes: true });
   } catch (err) {
-    console.error('Erreur SQL:', err);
+    console.error('Erreur SQL verifier-code :', err);
     res.status(500).json({ erreur: 'Erreur serveur.' });
   }
 });
@@ -79,21 +93,23 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       'SELECT * FROM verifications WHERE code = $1 AND valide = 0',
       [code.toUpperCase().trim()]
     );
+
     if (!rows[0]) {
       try { fs.unlinkSync(req.file.path); } catch (e) {}
       return res.status(400).json({ erreur: 'Code invalide.' });
     }
 
-    // Optimisation de l'image (compression légère, sans OCR)
+    // Optimisation de l'image (compression, correction orientation)
     const baseName = path.parse(req.file.filename).name;
     const imageOptimisee = path.join(UPLOAD_DIR, `opt-${baseName}.jpg`);
+
     await sharp(req.file.path)
       .rotate()
       .resize({ width: 1600, withoutEnlargement: true })
       .jpeg({ quality: 75 })
       .toFile(imageOptimisee);
 
-    // On remplace l'original par l'optimisée
+    // On supprime l'original (garde seulement l'optimisée)
     try { fs.unlinkSync(req.file.path); } catch (e) {}
 
     await pool.query(
@@ -102,6 +118,8 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
     );
 
     console.log(`📸 Photo reçue pour ${code} — en attente de modération`);
+    console.log(`   Fichier : ${imageOptimisee}`);
+
     return res.json({
       succes: true,
       moderation: true,
@@ -114,16 +132,23 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   }
 });
 
-// --- Route 3 : exposer une photo au bot ---
+// --- Route 3 : exposer une photo au bot (appelée par le bot) ---
 app.get('/photo/:code', async (req, res) => {
   try {
     const { rows } = await pool.query(
       'SELECT photo_path FROM verifications WHERE code = $1',
       [req.params.code.toUpperCase().trim()]
     );
-    if (!rows[0] || !rows[0].photo_path) return res.status(404).send('Photo introuvable');
+
+    if (!rows[0] || !rows[0].photo_path) {
+      return res.status(404).send('Photo introuvable');
+    }
+
     const filePath = rows[0].photo_path;
-    if (!fs.existsSync(filePath)) return res.status(404).send('Fichier introuvable');
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).send('Fichier introuvable');
+    }
+
     res.sendFile(filePath);
   } catch (err) {
     console.error('Erreur /photo :', err);
@@ -131,7 +156,26 @@ app.get('/photo/:code', async (req, res) => {
   }
 });
 
-// --- Route santé ---
+// --- Route 4 : supprimer une photo (appelée par le bot après refus) ---
+app.delete('/api/supprimer-photo/:code', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT photo_path FROM verifications WHERE code = $1',
+      [req.params.code.toUpperCase().trim()]
+    );
+
+    if (rows[0] && rows[0].photo_path && fs.existsSync(rows[0].photo_path)) {
+      try { fs.unlinkSync(rows[0].photo_path); } catch (e) {}
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Erreur suppression :', err);
+    res.status(500).json({ erreur: 'Erreur serveur' });
+  }
+});
+
+// --- Route santé (utile pour Railway) ---
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 // ========== DEMARRAGE ==========
