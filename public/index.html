@@ -3,94 +3,395 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Vérification - Léon Chiris, Amiral de Grasse, Decroisset</title>
+  <title>Vérification — Lycées Léon Chiris, Amiral de Grasse, Decroisset</title>
   <style>
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --primary: #5865F2;
+      --primary-hover: #4752c4;
+      --ok: #57F287;
+      --error: #ED4245;
+      --info: #FEE75C;
+    }
+
     body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: #2c2f33; color: #fff;
-      display: flex; align-items: center; justify-content: center;
-      min-height: 100vh; margin: 0; padding: 20px;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 25%, #f093fb 50%, #4facfe 75%, #00f2fe 100%);
+      background-size: 400% 400%;
+      animation: gradientShift 20s ease infinite;
+      overflow-x: hidden;
+      position: relative;
     }
-    .boite {
-      background: #23272a; padding: 2rem; border-radius: 12px;
-      max-width: 500px; width: 100%; text-align: center;
-      box-shadow: 0 8px 24px rgba(0,0,0,.4);
+
+    @keyframes gradientShift {
+      0%, 100% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
     }
-    h1 { color: #5865F2; margin-top: 0; font-size: 1.5rem; }
-    .lycees { font-size: .85rem; color: #b9bbbe; margin-bottom: 1.5rem; line-height: 1.6; }
+
+    /* Bulles décoratives flottantes */
+    .bubble {
+      position: fixed;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.15);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      pointer-events: none;
+      animation: floatBubble 15s infinite ease-in-out;
+      z-index: 0;
+    }
+    .bubble:nth-child(1) { width: 200px; height: 200px; top: 5%; left: 5%; animation-delay: 0s; }
+    .bubble:nth-child(2) { width: 150px; height: 150px; top: 60%; left: 80%; animation-delay: -3s; }
+    .bubble:nth-child(3) { width: 100px; height: 100px; top: 80%; left: 15%; animation-delay: -6s; }
+    .bubble:nth-child(4) { width: 250px; height: 250px; top: 20%; left: 70%; animation-delay: -9s; }
+    .bubble:nth-child(5) { width: 120px; height: 120px; top: 45%; left: 40%; animation-delay: -12s; }
+
+    @keyframes floatBubble {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      33% { transform: translate(30px, -30px) scale(1.1); }
+      66% { transform: translate(-20px, 20px) scale(0.95); }
+    }
+
+    /* Conteneur principal - effet verre */
+    .glass-container {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      max-width: 540px;
+      padding: 2.5rem 2rem;
+      border-radius: 24px;
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(30px) saturate(180%);
+      -webkit-backdrop-filter: blur(30px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      box-shadow:
+        0 8px 32px rgba(0, 0, 0, 0.2),
+        inset 0 1px 0 rgba(255, 255, 255, 0.4);
+      animation: slideIn 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(30px) scale(0.95); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    /* Indicateur d'étapes */
+    .steps {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 2rem;
+    }
+    .step-dot {
+      width: 40px;
+      height: 4px;
+      border-radius: 2px;
+      background: rgba(255, 255, 255, 0.25);
+      transition: all 0.4s ease;
+    }
+    .step-dot.active {
+      background: #fff;
+      box-shadow: 0 0 12px rgba(255, 255, 255, 0.8);
+      width: 60px;
+    }
+
+    h1 {
+      color: #fff;
+      font-size: 1.85rem;
+      font-weight: 700;
+      text-align: center;
+      margin-bottom: 0.5rem;
+      text-shadow: 0 2px 20px rgba(0, 0, 0, 0.2);
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      color: rgba(255, 255, 255, 0.85);
+      text-align: center;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      margin-bottom: 1.5rem;
+    }
+
+    .lycees-badge {
+      display: flex;
+      justify-content: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 1.5rem;
+    }
+    .lycee-tag {
+      padding: 4px 12px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.15);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 600;
+      backdrop-filter: blur(10px);
+      transition: all 0.3s ease;
+    }
+    .lycee-tag:hover {
+      background: rgba(255, 255, 255, 0.25);
+      transform: translateY(-2px);
+    }
+
+    /* Confidentialité */
+    .privacy-box {
+      background: rgba(87, 242, 135, 0.15);
+      border: 1px solid rgba(87, 242, 135, 0.4);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 1.5rem;
+      backdrop-filter: blur(10px);
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      animation: fadeInUp 0.6s 0.2s backwards;
+    }
+    .privacy-icon {
+      font-size: 1.3rem;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+    .privacy-text {
+      color: rgba(255, 255, 255, 0.95);
+      font-size: 0.8rem;
+      line-height: 1.5;
+    }
+    .privacy-text strong { color: #57F287; }
+
+    /* Étapes */
+    .step { display: none; animation: fadeInUp 0.5s ease; }
+    .step.active { display: block; }
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(15px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    label {
+      display: block;
+      color: rgba(255, 255, 255, 0.9);
+      font-size: 0.9rem;
+      margin-bottom: 8px;
+      font-weight: 500;
+    }
+
     input[type=text] {
-      width: 100%; padding: 14px; font-size: 22px; text-align: center;
-      letter-spacing: 6px; text-transform: uppercase; border-radius: 6px;
-      border: 2px solid #40444b; background: #2c2f33; color: #fff;
-      margin: 16px 0; outline: none;
+      width: 100%;
+      padding: 16px;
+      font-size: 22px;
+      text-align: center;
+      letter-spacing: 8px;
+      text-transform: uppercase;
+      font-weight: 700;
+      border-radius: 14px;
+      border: 2px solid rgba(255, 255, 255, 0.25);
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+      margin-bottom: 1rem;
+      outline: none;
+      transition: all 0.3s ease;
+      backdrop-filter: blur(10px);
+      font-family: 'Courier New', monospace;
     }
-    input[type=text]:focus { border-color: #5865F2; }
+    input[type=text]::placeholder {
+      color: rgba(255, 255, 255, 0.4);
+      letter-spacing: 8px;
+    }
+    input[type=text]:focus {
+      border-color: #fff;
+      background: rgba(255, 255, 255, 0.18);
+      box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.15);
+      transform: translateY(-2px);
+    }
+
     button {
-      background: #5865F2; color: #fff; border: none; padding: 12px 32px;
-      font-size: 16px; border-radius: 6px; cursor: pointer;
-      transition: background .15s;
+      width: 100%;
+      padding: 16px;
+      font-size: 1rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 14px;
+      cursor: pointer;
+      color: #fff;
+      background: linear-gradient(135deg, #5865F2, #7c3aed);
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 4px 20px rgba(88, 101, 242, 0.4);
+      position: relative;
+      overflow: hidden;
     }
-    button:hover:not(:disabled) { background: #4752c4; }
-    button:disabled { background: #555; cursor: not-allowed; opacity: .6; }
-    .message { margin-top: 16px; font-weight: 600; line-height: 1.5; min-height: 24px; }
+    button::before {
+      content: '';
+      position: absolute;
+      top: 0; left: -100%;
+      width: 100%; height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+      transition: left 0.6s ease;
+    }
+    button:hover:not(:disabled)::before { left: 100%; }
+    button:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 28px rgba(88, 101, 242, 0.55);
+    }
+    button:active:not(:disabled) { transform: translateY(0); }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    /* Zone upload */
+    .upload-area {
+      border: 2px dashed rgba(255, 255, 255, 0.35);
+      border-radius: 16px;
+      padding: 30px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      background: rgba(255, 255, 255, 0.05);
+      margin-bottom: 1rem;
+      backdrop-filter: blur(10px);
+    }
+    .upload-area:hover {
+      border-color: rgba(255, 255, 255, 0.7);
+      background: rgba(255, 255, 255, 0.12);
+      transform: translateY(-2px);
+    }
+    .upload-area.has-file {
+      border-style: solid;
+      border-color: #57F287;
+      background: rgba(87, 242, 135, 0.1);
+    }
+    .upload-icon {
+      font-size: 2.5rem;
+      margin-bottom: 10px;
+      display: block;
+    }
+    .upload-text {
+      color: rgba(255, 255, 255, 0.9);
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+    .upload-hint {
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 0.75rem;
+      margin-top: 6px;
+    }
+    input[type=file] { display: none; }
+
+    #apercu {
+      max-width: 100%;
+      max-height: 280px;
+      margin-top: 12px;
+      border-radius: 12px;
+      display: none;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    }
+
+    .message {
+      margin-top: 16px;
+      font-weight: 600;
+      line-height: 1.5;
+      min-height: 24px;
+      font-size: 0.9rem;
+      text-align: center;
+    }
     .ok { color: #57F287; }
     .erreur { color: #ED4245; }
     .info { color: #FEE75C; }
-    .etape { display: none; }
-    .etape.active { display: block; animation: fadeIn .3s; }
-    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-    input[type=file] {
-      margin: 16px 0; color: #fff; font-size: 14px;
-      width: 100%; padding: 12px; background: #2c2f33;
-      border: 2px dashed #40444b; border-radius: 6px; cursor: pointer;
-    }
-    input[type=file]:hover { border-color: #5865F2; }
-    #apercu {
-      max-width: 100%; max-height: 300px; margin-top: 12px;
-      border-radius: 8px; display: none;
-    }
+
     .spinner {
-      display: inline-block; width: 16px; height: 16px;
-      border: 2px solid rgba(255,255,255,.3); border-top-color: #fff;
-      border-radius: 50%; animation: spin .7s linear infinite;
-      vertical-align: middle; margin-right: 8px;
+      display: inline-block;
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .etapes-indic { display: flex; justify-content: center; gap: 8px; margin-bottom: 1.5rem; }
-    .dot { width: 10px; height: 10px; border-radius: 50%; background: #40444b; }
-    .dot.active { background: #5865F2; }
+
+    .footer-note {
+      margin-top: 1.5rem;
+      text-align: center;
+      font-size: 0.7rem;
+      color: rgba(255, 255, 255, 0.6);
+      line-height: 1.5;
+    }
+
+    @media (max-width: 480px) {
+      .glass-container { padding: 2rem 1.5rem; border-radius: 20px; }
+      h1 { font-size: 1.5rem; }
+      input[type=text] { font-size: 18px; letter-spacing: 6px; }
+    }
   </style>
 </head>
 <body>
-  <div class="boite">
-    <div class="etapes-indic">
-      <div class="dot active" id="dot1"></div>
-      <div class="dot" id="dot2"></div>
+  <!-- Bulles décoratives -->
+  <div class="bubble"></div>
+  <div class="bubble"></div>
+  <div class="bubble"></div>
+  <div class="bubble"></div>
+  <div class="bubble"></div>
+
+  <div class="glass-container">
+    <!-- Étapes visuelles -->
+    <div class="steps">
+      <div class="step-dot active" id="dot1"></div>
+      <div class="step-dot" id="dot2"></div>
     </div>
 
     <h1>🔒 Vérification</h1>
-    <p class="lycees">
-      Réservé aux élèves de :<br>
-      <strong>Léon Chiris</strong> · <strong>Amiral de Grasse</strong> · <strong>Decroisset</strong>
-    </p>
+    <p class="subtitle">Accès réservé aux élèves des lycées :</p>
 
-    <div id="etape1" class="etape active">
-      <p>Entre le code reçu en MP sur Discord :</p>
-      <input type="text" id="code" maxlength="6" placeholder="A7K3P9" autocomplete="off">
+    <div class="lycees-badge">
+      <span class="lycee-tag">Léon Chiris</span>
+      <span class="lycee-tag">Amiral de Grasse</span>
+      <span class="lycee-tag">Decroisset</span>
+    </div>
+
+    <!-- Message de confidentialité -->
+    <div class="privacy-box">
+      <span class="privacy-icon">🛡️</span>
+      <div class="privacy-text">
+        <strong>Aucun document n'est conservé.</strong> Ta photo est utilisée uniquement pour vérifier ton identité, puis <strong>définitivement supprimée</strong> après validation.<br><br>
+        💡 Tu peux <strong>masquer ton visage</strong> ou toute information personnelle sur la photo. Seul le nom du lycée doit être visible.
+      </div>
+    </div>
+
+    <!-- ÉTAPE 1 : CODE -->
+    <div id="etape1" class="step active">
+      <label for="code">Entre le code reçu en MP sur Discord</label>
+      <input type="text" id="code" maxlength="6" placeholder="A7K3P9" autocomplete="off" spellcheck="false">
       <button onclick="verifierCode()" id="btnCode">Valider le code</button>
       <p id="message1" class="message"></p>
     </div>
 
-    <div id="etape2" class="etape">
-      <p>📸 Prends une photo de ton <strong>carnet de correspondance</strong>.<br>
-      Le nom du lycée doit être visible.</p>
+    <!-- ÉTAPE 2 : PHOTO -->
+    <div id="etape2" class="step">
+      <label>📸 Photo de ton carnet de correspondance</label>
+      <div class="upload-area" id="uploadArea" onclick="document.getElementById('photo').click()">
+        <span class="upload-icon">📷</span>
+        <div class="upload-text">Clique pour prendre ou choisir une photo</div>
+        <div class="upload-hint">JPG, PNG — Max 10 Mo</div>
+      </div>
       <input type="file" id="photo" accept="image/*" capture="environment">
       <img id="apercu" alt="Aperçu du carnet">
-      <br>
       <button id="btnEnvoi" onclick="envoyerPhoto()" disabled>Envoyer la photo</button>
       <p id="message2" class="message"></p>
     </div>
+
+    <p class="footer-note">
+      🔐 Tes données sont en sécurité. Seuls les modérateurs du serveur voient ta photo.
+    </p>
   </div>
 
   <script>
@@ -102,7 +403,7 @@
       const btn = document.getElementById('btnCode');
 
       if (!code || code.length < 4) {
-        msg.textContent = 'Entre un code valide (6 caractères).';
+        msg.textContent = '⚠️ Entre un code valide (6 caractères).';
         msg.className = 'message erreur';
         return;
       }
@@ -125,13 +426,13 @@
           document.getElementById('dot1').classList.remove('active');
           document.getElementById('dot2').classList.add('active');
         } else {
-          msg.textContent = data.erreur;
+          msg.textContent = '❌ ' + data.erreur;
           msg.className = 'message erreur';
           btn.disabled = false;
           btn.textContent = 'Valider le code';
         }
       } catch (err) {
-        msg.textContent = 'Erreur réseau. Réessaie.';
+        msg.textContent = '❌ Erreur réseau. Réessaie.';
         msg.className = 'message erreur';
         btn.disabled = false;
         btn.textContent = 'Valider le code';
@@ -147,7 +448,7 @@
       if (!file) return;
 
       if (file.size > 10 * 1024 * 1024) {
-        document.getElementById('message2').textContent = 'Photo trop lourde (max 10 Mo).';
+        document.getElementById('message2').textContent = '⚠️ Photo trop lourde (max 10 Mo).';
         document.getElementById('message2').className = 'message erreur';
         return;
       }
@@ -155,6 +456,7 @@
       const apercu = document.getElementById('apercu');
       apercu.src = URL.createObjectURL(file);
       apercu.style.display = 'block';
+      document.getElementById('uploadArea').classList.add('has-file');
       document.getElementById('btnEnvoi').disabled = false;
       document.getElementById('message2').textContent = '';
     });
@@ -165,14 +467,14 @@
       const btn = document.getElementById('btnEnvoi');
 
       if (!file) {
-        msg.textContent = 'Choisis une photo.';
+        msg.textContent = '⚠️ Choisis une photo.';
         msg.className = 'message erreur';
         return;
       }
 
       btn.disabled = true;
-      btn.innerHTML = '<span class="spinner"></span>Analyse en cours…';
-      msg.textContent = 'Analyse Mindee en cours, ça peut prendre 10 à 30 secondes…';
+      btn.innerHTML = '<span class="spinner"></span>Envoi en cours…';
+      msg.textContent = 'Envoi de ta photo…';
       msg.className = 'message info';
 
       const formData = new FormData();
@@ -184,17 +486,18 @@
         const data = await res.json();
 
         if (data.succes) {
-          msg.textContent = data.message;
-          msg.className = 'message ' + (data.moderation ? 'info' : 'ok');
+          msg.textContent = '✅ ' + data.message;
+          msg.className = 'message ok';
           btn.textContent = '✅ Envoyé';
+          btn.disabled = true;
         } else {
-          msg.textContent = data.erreur || 'Erreur.';
+          msg.textContent = '❌ ' + (data.erreur || 'Erreur.');
           msg.className = 'message erreur';
           btn.disabled = false;
           btn.textContent = 'Envoyer la photo';
         }
       } catch (err) {
-        msg.textContent = 'Erreur réseau. Réessaie.';
+        msg.textContent = '❌ Erreur réseau. Réessaie.';
         msg.className = 'message erreur';
         btn.disabled = false;
         btn.textContent = 'Envoyer la photo';

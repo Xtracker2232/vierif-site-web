@@ -4,7 +4,6 @@ const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
 const { Pool } = require('pg');
-const fetch = require('node-fetch');
 
 sharp.cache(false);
 
@@ -13,11 +12,6 @@ const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 
 if (!process.env.DATABASE_URL) { console.error('❌ DATABASE_URL manquante.'); process.exit(1); }
-if (!process.env.MISTRAL_API_KEY) { console.error('❌ MISTRAL_API_KEY manquante.'); process.exit(1); }
-
-const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
-
-console.log('🔧 Mistral OCR initialisé');
 
 // ========== POSTGRES ==========
 const pool = new Pool({
@@ -33,7 +27,6 @@ const pool = new Pool({
         photo_path TEXT, a_moderer INTEGER DEFAULT 0, lycee TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
-    await pool.query('ALTER TABLE verifications ADD COLUMN IF NOT EXISTS lycee TEXT');
     console.log('✅ Table verifications prête.');
   } catch (err) { console.error('❌ Erreur création table :', err.message); }
 })();
@@ -52,55 +45,6 @@ const upload = multer({
     else cb(new Error('Images uniquement'));
   }
 });
-
-// ========== LYCEES ==========
-const LYCEES = [
-  { nom: 'Léon Chiris', variantes: ['leon chiris', 'leonchiris', 'chiris'] },
-  { nom: 'Amiral de Grasse', variantes: ['amiral de grasse', 'amiral grasse', 'grasse'] },
-  { nom: 'Decroisset', variantes: ['decroisset', 'de croisset', 'croisset'] },
-];
-
-function normaliser(texte) {
-  if (!texte) return '';
-  return texte.toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function trouverLycee(texte) {
-  const t = normaliser(texte);
-  for (const l of LYCEES) for (const v of l.variantes) if (t.includes(normaliser(v))) return l.nom;
-  return null;
-}
-
-// ========== MISTRAL OCR ==========
-async function analyserAvecMistral(cheminImage) {
-  const imageBuffer = fs.readFileSync(cheminImage);
-  const base64Image = imageBuffer.toString('base64');
-
-  const body = {
-    model: 'mistral-ocr-latest',
-    document: {
-      type: 'image_url',
-      image_url: `data:image/jpeg;base64,${base64Image}`,
-    },
-  };
-
-  const response = await fetch('https://api.eu.mistral.ai/v1/ocr', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${MISTRAL_API_KEY}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Mistral HTTP ${response.status} : ${errText.slice(0, 400)}`);
-  }
-
-  const data = await response.json();
-  return data;
-}
 
 // ========== APP ==========
 const app = express();
@@ -124,13 +68,12 @@ app.post('/api/verifier-code', async (req, res) => {
   }
 });
 
-// --- Route 2 : upload photo + analyse Mistral OCR ---
+// --- Route 2 : upload photo (100% manuel, pas d'IA) ---
 app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ erreur: 'Aucun code fourni' });
   if (!req.file) return res.status(400).json({ erreur: 'Aucune photo reçue' });
 
-  let imageOptimisee = null;
   try {
     const { rows } = await pool.query(
       'SELECT * FROM verifications WHERE code = $1 AND valide = 0',
@@ -141,72 +84,32 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       return res.status(400).json({ erreur: 'Code invalide.' });
     }
 
+    // Optimisation de l'image (compression légère, sans OCR)
     const baseName = path.parse(req.file.filename).name;
-    imageOptimisee = path.join(UPLOAD_DIR, `opt-${baseName}.jpg`);
+    const imageOptimisee = path.join(UPLOAD_DIR, `opt-${baseName}.jpg`);
     await sharp(req.file.path)
       .rotate()
-      .resize({ width: 1800, withoutEnlargement: true })
-      .jpeg({ quality: 80 })
+      .resize({ width: 1600, withoutEnlargement: true })
+      .jpeg({ quality: 75 })
       .toFile(imageOptimisee);
 
-    console.log(`📤 Envoi à Mistral OCR (code ${code})...`);
-
-    let lyceeTrouve = null;
-    let erreurMistral = false;
-
-    try {
-      const data = await analyserAvecMistral(imageOptimisee);
-      const toutesLesValeurs = JSON.stringify(data);
-      console.log(`📄 Réponse Mistral (${code}) :`, toutesLesValeurs.slice(0, 800));
-
-      // Extraction du texte (Mistral renvoie pages[].markdown)
-      let texteComplet = '';
-      if (Array.isArray(data.pages)) {
-        texteComplet = data.pages.map(p => p.markdown || p.text || '').join('\n');
-      } else if (data.text) {
-        texteComplet = data.text;
-      } else if (data.content) {
-        texteComplet = typeof data.content === 'string' ? data.content : JSON.stringify(data.content);
-      }
-
-      console.log(`📝 Texte extrait :`, texteComplet.slice(0, 500));
-
-      lyceeTrouve = trouverLycee(texteComplet);
-      if (!lyceeTrouve) lyceeTrouve = trouverLycee(toutesLesValeurs);
-    } catch (mistralErr) {
-      console.error('❌ Erreur Mistral :', mistralErr.message);
-      erreurMistral = true;
-    }
-
-    if (lyceeTrouve) {
-      await pool.query(
-        'UPDATE verifications SET valide = 1, lycee = $1 WHERE code = $2',
-        [lyceeTrouve, code.toUpperCase().trim()]
-      );
-      try { fs.unlinkSync(req.file.path); } catch (e) {}
-      try { fs.unlinkSync(imageOptimisee); } catch (e) {}
-      console.log(`✅ Lycée reconnu : ${lyceeTrouve}`);
-      return res.json({
-        succes: true,
-        message: `✅ Carnet reconnu (${lyceeTrouve}). Tu seras vérifié dans quelques secondes.`,
-      });
-    }
+    // On remplace l'original par l'optimisée
+    try { fs.unlinkSync(req.file.path); } catch (e) {}
 
     await pool.query(
       'UPDATE verifications SET photo_path = $1, a_moderer = 1, lycee = $2 WHERE code = $3',
-      [req.file.path, erreurMistral ? 'Erreur analyse' : 'En attente', code.toUpperCase().trim()]
+      [imageOptimisee, 'En attente', code.toUpperCase().trim()]
     );
-    try { fs.unlinkSync(imageOptimisee); } catch (e) {}
-    console.log(`⚠️ Envoi en modération pour ${code}`);
+
+    console.log(`📸 Photo reçue pour ${code} — en attente de modération`);
     return res.json({
       succes: true,
       moderation: true,
-      message: '📸 Photo reçue. Un modérateur va vérifier ton carnet manuellement.',
+      message: '✅ Photo reçue. Un modérateur va vérifier ton carnet manuellement (généralement sous quelques minutes à quelques heures).',
     });
   } catch (err) {
-    console.error('❌ Erreur générale :', err);
+    console.error('❌ Erreur upload :', err);
     try { fs.unlinkSync(req.file.path); } catch (e) {}
-    if (imageOptimisee) try { fs.unlinkSync(imageOptimisee); } catch (e) {}
     return res.status(500).json({ erreur: 'Erreur lors du traitement de la photo.' });
   }
 });
