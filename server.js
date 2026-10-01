@@ -2,9 +2,9 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const Tesseract = require('tesseract.js');
 const sharp = require('sharp');
 const { Pool } = require('pg');
+const { Client: MindeeClient } = require('mindee');
 
 // ========== CONFIG ==========
 const PORT = process.env.PORT || 3000;
@@ -14,6 +14,21 @@ if (!process.env.DATABASE_URL) {
   console.error('❌ DATABASE_URL manquante.');
   process.exit(1);
 }
+if (!process.env.MINDEE_API_KEY) {
+  console.error('❌ MINDEE_API_KEY manquante.');
+  process.exit(1);
+}
+if (!process.env.MINDEE_MODEL_ID) {
+  console.error('❌ MINDEE_MODEL_ID manquante.');
+  process.exit(1);
+}
+
+// ========== MINDEE ==========
+const mindeeClient = new MindeeClient({
+  apiKey: process.env.MINDEE_API_KEY,
+});
+
+const MINDEE_MODEL_ID = process.env.MINDEE_MODEL_ID;
 
 // ========== POSTGRES ==========
 const pool = new Pool({
@@ -31,9 +46,11 @@ const pool = new Pool({
         valide       INTEGER DEFAULT 0,
         photo_path   TEXT,
         a_moderer    INTEGER DEFAULT 0,
+        lycee        TEXT,
         created_at   TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+    await pool.query('ALTER TABLE verifications ADD COLUMN IF NOT EXISTS lycee TEXT');
     console.log('✅ Table verifications prête.');
   } catch (err) {
     console.error('❌ Erreur création table :', err.message);
@@ -58,7 +75,7 @@ const upload = multer({
   },
 });
 
-// ========== LYCEES ==========
+// ========== LYCEES ACCEPTES ==========
 const LYCEES = [
   { nom: 'Léon Chiris',      variantes: ['leon chiris', 'leonchiris', 'chiris'] },
   { nom: 'Amiral de Grasse', variantes: ['amiral de grasse', 'amiral grasse', 'grasse'] },
@@ -66,7 +83,9 @@ const LYCEES = [
 ];
 
 function normaliser(texte) {
+  if (!texte) return '';
   return texte
+    .toString()
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -75,8 +94,8 @@ function normaliser(texte) {
     .trim();
 }
 
-function trouverLycee(texteOCR) {
-  const texte = normaliser(texteOCR);
+function trouverLycee(texteExtrait) {
+  const texte = normaliser(texteExtrait);
   for (const lycee of LYCEES) {
     for (const variante of lycee.variantes) {
       if (texte.includes(normaliser(variante))) return lycee.nom;
@@ -114,14 +133,14 @@ app.post('/api/verifier-code', async (req, res) => {
   }
 });
 
-// --- Route 2 : upload photo + OCR ---
+// --- Route 2 : upload photo + analyse Mindee ---
 app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   const { code } = req.body;
 
   if (!code) return res.status(400).json({ erreur: 'Aucun code fourni' });
   if (!req.file) return res.status(400).json({ erreur: 'Aucune photo reçue' });
 
-  let imageTraitee = null;
+  let imageOptimisee = null;
 
   try {
     const { rows } = await pool.query(
@@ -134,29 +153,36 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       return res.status(400).json({ erreur: 'Code invalide ou déjà utilisé.' });
     }
 
-    // Prétraitement
-    imageTraitee = path.join(UPLOAD_DIR, `traite-${req.file.filename}.png`);
+    // Optimisation de l'image avant envoi à Mindee
+    imageOptimisee = path.join(UPLOAD_DIR, `opt-${req.file.filename}.jpg`);
     await sharp(req.file.path)
-      .resize({ width: 1600, withoutEnlargement: true })
-      .grayscale()
-      .normalize()
-      .sharpen()
-      .toFile(imageTraitee);
+      .rotate()
+      .resize({ width: 2000, withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toFile(imageOptimisee);
 
-    // OCR
-    const { data: { text } } = await Tesseract.recognize(imageTraitee, 'fra');
-    console.log(`📄 OCR (${code}) :`, text.slice(0, 200).replace(/\n/g, ' '));
+    console.log(`📤 Envoi à Mindee (code ${code})...`);
 
-    const lyceeTrouve = trouverLycee(text);
+    // Appel Mindee avec le modèle personnalisé
+    const response = await mindeeClient.parse(
+      require('mindee').product.CustomV1,
+      { inputSource: fs.createReadStream(imageOptimisee) },
+      { endpointName: MINDEE_MODEL_ID }
+    );
+
+    const toutesLesValeurs = JSON.stringify(response.document);
+    console.log(`📄 Réponse Mindee (${code}) :`, toutesLesValeurs.slice(0, 500));
+
+    const lyceeTrouve = trouverLycee(toutesLesValeurs);
 
     if (lyceeTrouve) {
       await pool.query(
-        'UPDATE verifications SET valide = 1 WHERE code = $1',
-        [code.toUpperCase().trim()]
+        'UPDATE verifications SET valide = 1, lycee = $1 WHERE code = $2',
+        [lyceeTrouve, code.toUpperCase().trim()]
       );
 
       try { fs.unlinkSync(req.file.path); } catch (e) {}
-      if (imageTraitee) try { fs.unlinkSync(imageTraitee); } catch (e) {}
+      try { fs.unlinkSync(imageOptimisee); } catch (e) {}
 
       console.log(`✅ Lycée reconnu : ${lyceeTrouve}`);
       return res.json({
@@ -167,11 +193,11 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
 
     // Modération manuelle
     await pool.query(
-      'UPDATE verifications SET photo_path = $1, a_moderer = 1 WHERE code = $2',
-      [req.file.path, code.toUpperCase().trim()]
+      'UPDATE verifications SET photo_path = $1, a_moderer = 1, lycee = $2 WHERE code = $3',
+      [req.file.path, 'En attente', code.toUpperCase().trim()]
     );
 
-    if (imageTraitee) try { fs.unlinkSync(imageTraitee); } catch (e) {}
+    try { fs.unlinkSync(imageOptimisee); } catch (e) {}
 
     console.log(`⚠️ Aucun lycée reconnu - modération pour ${code}`);
     return res.json({
@@ -182,9 +208,9 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
         '(généralement sous quelques heures).',
     });
   } catch (err) {
-    console.error('❌ Erreur OCR :', err);
+    console.error('❌ Erreur Mindee :', err);
     try { fs.unlinkSync(req.file.path); } catch (e) {}
-    if (imageTraitee) try { fs.unlinkSync(imageTraitee); } catch (e) {}
+    if (imageOptimisee) try { fs.unlinkSync(imageOptimisee); } catch (e) {}
     return res.status(500).json({ erreur: 'Erreur lors du traitement de la photo.' });
   }
 });
