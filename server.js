@@ -6,10 +6,8 @@ const sharp = require('sharp');
 const { Pool } = require('pg');
 const mindee = require('mindee');
 
-// Désactive le cache de sharp
 sharp.cache(false);
 
-// ========== CONFIG ==========
 const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 
@@ -17,12 +15,11 @@ if (!process.env.DATABASE_URL) { console.error('❌ DATABASE_URL manquante.'); p
 if (!process.env.MINDEE_API_KEY) { console.error('❌ MINDEE_API_KEY manquante.'); process.exit(1); }
 if (!process.env.MINDEE_MODEL_ID) { console.error('❌ MINDEE_MODEL_ID manquante.'); process.exit(1); }
 
-// ========== MINDEE ==========
-const mindeeClient = new mindee.Client({ apiKey: process.env.MINDEE_API_KEY });
+// Mindee V1 Client (nouvelle méthode)
+const mindeeClient = new mindee.v1.Client({ apiKey: process.env.MINDEE_API_KEY });
 const MINDEE_MODEL_ID = process.env.MINDEE_MODEL_ID;
 const MINDEE_ACCOUNT_NAME = process.env.MINDEE_ACCOUNT_NAME || '';
 
-// ========== POSTGRES ==========
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
 (async () => {
@@ -38,7 +35,6 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
   } catch (err) { console.error('❌ Erreur création table :', err.message); }
 })();
 
-// ========== UPLOAD ==========
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const upload = multer({
   storage: multer.diskStorage({
@@ -49,7 +45,6 @@ const upload = multer({
   fileFilter: (req, file, cb) => { if (file.mimetype.startsWith('image/')) cb(null, true); else cb(new Error('Images uniquement')); }
 });
 
-// ========== LYCEES ==========
 const LYCEES = [
   { nom: 'Léon Chiris', variantes: ['leon chiris', 'leonchiris', 'chiris'] },
   { nom: 'Amiral de Grasse', variantes: ['amiral de grasse', 'amiral grasse', 'grasse'] },
@@ -66,12 +61,10 @@ function trouverLycee(texte) {
   return null;
 }
 
-// ========== APP ==========
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- Route 1 : vérifier le code ---
 app.post('/api/verifier-code', async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ erreur: 'Aucun code fourni' });
@@ -82,7 +75,6 @@ app.post('/api/verifier-code', async (req, res) => {
   } catch (err) { console.error('Erreur SQL:', err); res.status(500).json({ erreur: 'Erreur serveur.' }); }
 });
 
-// --- Route 2 : upload photo + Mindee ---
 app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ erreur: 'Aucun code fourni' });
@@ -95,7 +87,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
 
     const baseName = path.parse(req.file.filename).name;
     imageOptimisee = path.join(UPLOAD_DIR, `opt-${baseName}.jpg`);
-    await sharp(req.file.path).rotate().resize({ width: 2000, withoutEnclargement: true }).jpeg({ quality: 85 }).toFile(imageOptimisee);
+    await sharp(req.file.path).rotate().resize({ width: 2000, withoutEnlargement: true }).jpeg({ quality: 85 }).toFile(imageOptimisee);
 
     console.log(`📤 Envoi à Mindee (code ${code})...`);
 
@@ -103,9 +95,9 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
     let erreurMindee = false;
 
     try {
-      // Nouvelle méthode Mindee V2 : createEndpoint + enqueueAndParse
-      const customEndpoint = mindeeClient.createEndpoint(MINDEE_MODEL_ID, MINDEE_ACCOUNT_NAME, '1');
+      // Nouvelle méthode Mindee : GeneratedV1 + createEndpoint
       const inputSource = new mindee.PathInput({ inputPath: imageOptimisee });
+      const customEndpoint = mindeeClient.createEndpoint(MINDEE_MODEL_ID, MINDEE_ACCOUNT_NAME);
 
       const response = await mindeeClient.enqueueAndParse(
         mindee.v1.product.GeneratedV1,
@@ -142,7 +134,6 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   }
 });
 
-// --- Route 3 : exposer une photo au bot ---
 app.get('/photo/:code', async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT photo_path FROM verifications WHERE code = $1', [req.params.code.toUpperCase().trim()]);
@@ -153,8 +144,6 @@ app.get('/photo/:code', async (req, res) => {
   } catch (err) { console.error('Erreur /photo :', err); res.status(500).send('Erreur serveur'); }
 });
 
-// --- Route santé ---
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// ========== DEMARRAGE ==========
 app.listen(PORT, '0.0.0.0', () => { console.log(`🌐 Site en ligne sur le port ${PORT}`); });
