@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
 const { Pool } = require('pg');
-const mindee = require('mindee');
+const fetch = require('node-fetch');
 
 sharp.cache(false);
 
@@ -13,14 +13,11 @@ const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 
 if (!process.env.DATABASE_URL) { console.error('❌ DATABASE_URL manquante.'); process.exit(1); }
-if (!process.env.MINDEE_API_KEY) { console.error('❌ MINDEE_API_KEY manquante.'); process.exit(1); }
-if (!process.env.MINDEE_MODEL_ID) { console.error('❌ MINDEE_MODEL_ID manquante.'); process.exit(1); }
+if (!process.env.MISTRAL_API_KEY) { console.error('❌ MISTRAL_API_KEY manquante.'); process.exit(1); }
 
-// ========== MINDEE V2 ==========
-const mindeeClient = new mindee.Client({ apiKey: process.env.MINDEE_API_KEY });
-const MINDEE_MODEL_ID = process.env.MINDEE_MODEL_ID;
+const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
 
-console.log(`🔧 Mindee V2 initialisé. Model ID: ${MINDEE_MODEL_ID}`);
+console.log('🔧 Mistral OCR initialisé');
 
 // ========== POSTGRES ==========
 const pool = new Pool({
@@ -74,6 +71,37 @@ function trouverLycee(texte) {
   return null;
 }
 
+// ========== MISTRAL OCR ==========
+async function analyserAvecMistral(cheminImage) {
+  const imageBuffer = fs.readFileSync(cheminImage);
+  const base64Image = imageBuffer.toString('base64');
+
+  const body = {
+    model: 'mistral-ocr-latest',
+    document: {
+      type: 'image_url',
+      image_url: `data:image/jpeg;base64,${base64Image}`,
+    },
+  };
+
+  const response = await fetch('https://api.eu.mistral.ai/v1/ocr', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${MISTRAL_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Mistral HTTP ${response.status} : ${errText.slice(0, 400)}`);
+  }
+
+  const data = await response.json();
+  return data;
+}
+
 // ========== APP ==========
 const app = express();
 app.use(express.json());
@@ -96,7 +124,7 @@ app.post('/api/verifier-code', async (req, res) => {
   }
 });
 
-// --- Route 2 : upload photo + Mindee V2 Extraction ---
+// --- Route 2 : upload photo + analyse Mistral OCR ---
 app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ erreur: 'Aucun code fourni' });
@@ -117,69 +145,37 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
     imageOptimisee = path.join(UPLOAD_DIR, `opt-${baseName}.jpg`);
     await sharp(req.file.path)
       .rotate()
-      .resize({ width: 2000, withoutEnlargement: true })
-      .jpeg({ quality: 85 })
+      .resize({ width: 1800, withoutEnlargement: true })
+      .jpeg({ quality: 80 })
       .toFile(imageOptimisee);
 
-    console.log(`📤 Envoi à Mindee V2 Extraction (code ${code})...`);
+    console.log(`📤 Envoi à Mistral OCR (code ${code})...`);
 
     let lyceeTrouve = null;
-    let erreurMindee = false;
+    let erreurMistral = false;
 
     try {
-      const inputSource = new mindee.PathInput({ inputPath: imageOptimisee });
-      const modelParams = { modelId: MINDEE_MODEL_ID };
+      const data = await analyserAvecMistral(imageOptimisee);
+      const toutesLesValeurs = JSON.stringify(data);
+      console.log(`📄 Réponse Mistral (${code}) :`, toutesLesValeurs.slice(0, 800));
 
-      // Appel V2 avec Extraction (ton modèle est un modèle d'extraction
-      // qui contient un champ de type classification en interne)
-      const response = await mindeeClient.enqueueAndGetResult(
-        mindee.product.Extraction,
-        inputSource,
-        modelParams
-      );
-
-      console.log(`📄 Réponse Mindee brute :`, JSON.stringify(response.inference).slice(0, 1200));
-
-      // Extraction du champ etablissement_scolaire (plusieurs chemins possibles selon structure)
-      let valeurExtraite = null;
-      const r = response.inference?.result || {};
-      const fields = r.fields || {};
-
-      // Cas 1 : valeur directe dans fields.etablissement_scolaire
-      let etab = fields.etablissement_scolaire;
-
-      // Cas 2 : valeur dans fields.fields.etablissement_scolaire
-      if (!etab && fields.fields) etab = fields.fields.etablissement_scolaire;
-
-      // Cas 3 : dans prediction.fields
-      if (!etab && r.prediction?.fields) etab = r.prediction.fields.etablissement_scolaire;
-
-      if (etab) {
-        if (typeof etab === 'string') valeurExtraite = etab;
-        else if (etab.value) valeurExtraite = etab.value;
-        else if (etab.stringValue) valeurExtraite = etab.stringValue;
-        else if (etab.content) valeurExtraite = etab.content;
-        else if (Array.isArray(etab.values) && etab.values[0]) {
-          const v = etab.values[0];
-          valeurExtraite = v.content || v.value || v.stringValue || (typeof v === 'string' ? v : null);
-        }
+      // Extraction du texte (Mistral renvoie pages[].markdown)
+      let texteComplet = '';
+      if (Array.isArray(data.pages)) {
+        texteComplet = data.pages.map(p => p.markdown || p.text || '').join('\n');
+      } else if (data.text) {
+        texteComplet = data.text;
+      } else if (data.content) {
+        texteComplet = typeof data.content === 'string' ? data.content : JSON.stringify(data.content);
       }
 
-      console.log(`🏫 Lycée extrait :`, valeurExtraite);
+      console.log(`📝 Texte extrait :`, texteComplet.slice(0, 500));
 
-      if (valeurExtraite) {
-        lyceeTrouve = trouverLycee(valeurExtraite);
-      }
-      if (!lyceeTrouve) {
-        // Fallback : cherche dans toute la réponse
-        lyceeTrouve = trouverLycee(JSON.stringify(response.inference));
-      }
-    } catch (mindeeErr) {
-      console.error('❌ Erreur Mindee :', mindeeErr.message);
-      if (mindeeErr.response) {
-        console.error('Détails:', JSON.stringify(mindeeErr.response).slice(0, 400));
-      }
-      erreurMindee = true;
+      lyceeTrouve = trouverLycee(texteComplet);
+      if (!lyceeTrouve) lyceeTrouve = trouverLycee(toutesLesValeurs);
+    } catch (mistralErr) {
+      console.error('❌ Erreur Mistral :', mistralErr.message);
+      erreurMistral = true;
     }
 
     if (lyceeTrouve) {
@@ -198,7 +194,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
 
     await pool.query(
       'UPDATE verifications SET photo_path = $1, a_moderer = 1, lycee = $2 WHERE code = $3',
-      [req.file.path, erreurMindee ? 'Erreur analyse' : 'En attente', code.toUpperCase().trim()]
+      [req.file.path, erreurMistral ? 'Erreur analyse' : 'En attente', code.toUpperCase().trim()]
     );
     try { fs.unlinkSync(imageOptimisee); } catch (e) {}
     console.log(`⚠️ Envoi en modération pour ${code}`);
