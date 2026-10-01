@@ -16,10 +16,10 @@ if (!process.env.DATABASE_URL) { console.error('❌ DATABASE_URL manquante.'); p
 if (!process.env.MINDEE_API_KEY) { console.error('❌ MINDEE_API_KEY manquante.'); process.exit(1); }
 if (!process.env.MINDEE_MODEL_ID) { console.error('❌ MINDEE_MODEL_ID manquante.'); process.exit(1); }
 
-// ========== MINDEE V1 ==========
-const mindeeClient = new mindee.v1.Client({ apiKey: process.env.MINDEE_API_KEY });
+// ========== MINDEE V2 ==========
+// La V2 utilise directement le modelId, pas d'endpointName ni d'accountName
+const mindeeClient = new mindee.Client({ apiKey: process.env.MINDEE_API_KEY });
 const MINDEE_MODEL_ID = process.env.MINDEE_MODEL_ID;
-const MINDEE_ACCOUNT_NAME = process.env.MINDEE_ACCOUNT_NAME || '';
 
 // ========== POSTGRES ==========
 const pool = new Pool({
@@ -95,7 +95,7 @@ app.post('/api/verifier-code', async (req, res) => {
   }
 });
 
-// --- Route 2 : upload photo + analyse Mindee ---
+// --- Route 2 : upload photo + Mindee V2 ---
 app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ erreur: 'Aucun code fourni' });
@@ -112,7 +112,6 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       return res.status(400).json({ erreur: 'Code invalide.' });
     }
 
-    // Optimisation de l'image
     const baseName = path.parse(req.file.filename).name;
     imageOptimisee = path.join(UPLOAD_DIR, `opt-${baseName}.jpg`);
     await sharp(req.file.path)
@@ -121,50 +120,42 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       .jpeg({ quality: 85 })
       .toFile(imageOptimisee);
 
-    console.log(`📤 Envoi à Mindee (code ${code})...`);
+    console.log(`📤 Envoi à Mindee V2 (code ${code})...`);
 
     let lyceeTrouve = null;
     let erreurMindee = false;
 
     try {
-      // ===== MINDEE V1 =====
+      // ===== MINDEE V2 (méthode correcte pour ton compte) =====
       const inputSource = new mindee.PathInput({ inputPath: imageOptimisee });
-      const customEndpoint = mindeeClient.createEndpoint(
-        MINDEE_MODEL_ID,
-        MINDEE_ACCOUNT_NAME || undefined,
-        '1'
-      );
+      
+      // Paramètres V2 : on passe le modelId directement
+      const modelParams = {
+        modelId: MINDEE_MODEL_ID,
+      };
 
-      const response = await mindeeClient.enqueueAndParse(
-        mindee.v1.product.GeneratedV1,
+      // Appel V2 avec ExtractionResponse
+      const response = await mindeeClient.enqueueAndGetResult(
+        mindee.product.Extraction,
         inputSource,
-        { endpoint: customEndpoint }
+        modelParams
       );
 
-      const doc = response.document;
-      const toutesLesValeurs = JSON.stringify(doc);
+      // Récupération des champs extraits
+      const fields = response.inference?.result?.fields || {};
+      const toutesLesValeurs = JSON.stringify(response.inference);
       console.log(`📄 Réponse Mindee (${code}) :`, toutesLesValeurs.slice(0, 500));
 
-      // Extraction du champ etablissement_scolaire (plusieurs chemins possibles)
+      // Extraction du champ "etablissement_scolaire"
       let valeurExtraite = null;
-      try {
-        const chemins = [
-          doc?.inference?.prediction?.etablissement_scolaire,
-          doc?.prediction?.etablissement_scolaire,
-          doc?.fields?.etablissement_scolaire,
-          doc?.inference?.prediction?.fields?.etablissement_scolaire,
-        ];
-        for (const champ of chemins) {
-          if (!champ) continue;
-          if (typeof champ === 'string') { valeurExtraite = champ; break; }
-          if (champ.value) { valeurExtraite = champ.value; break; }
-          if (Array.isArray(champ.values) && champ.values[0]) {
-            valeurExtraite = champ.values[0].content || champ.values[0].value;
-            break;
-          }
+      const etab = fields.etablissement_scolaire;
+      if (etab) {
+        if (typeof etab === 'string') valeurExtraite = etab;
+        else if (etab.value) valeurExtraite = etab.value;
+        else if (etab.stringValue) valeurExtraite = etab.stringValue;
+        else if (Array.isArray(etab.values) && etab.values[0]) {
+          valeurExtraite = etab.values[0].content || etab.values[0].value;
         }
-      } catch (e) {
-        console.error('Erreur extraction champ:', e.message);
       }
 
       console.log(`🏫 Lycée extrait :`, valeurExtraite);
