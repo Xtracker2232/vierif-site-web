@@ -17,9 +17,10 @@ if (!process.env.MINDEE_API_KEY) { console.error('❌ MINDEE_API_KEY manquante.'
 if (!process.env.MINDEE_MODEL_ID) { console.error('❌ MINDEE_MODEL_ID manquante.'); process.exit(1); }
 
 // ========== MINDEE V2 ==========
-// La V2 utilise directement le modelId, pas d'endpointName ni d'accountName
 const mindeeClient = new mindee.Client({ apiKey: process.env.MINDEE_API_KEY });
 const MINDEE_MODEL_ID = process.env.MINDEE_MODEL_ID;
+
+console.log(`🔧 Mindee V2 initialisé. Model ID: ${MINDEE_MODEL_ID}`);
 
 // ========== POSTGRES ==========
 const pool = new Pool({
@@ -126,10 +127,10 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
     let erreurMindee = false;
 
     try {
-      // ===== MINDEE V2 (méthode correcte pour ton compte) =====
+      // ===== MINDEE V2 - MÉTHODE OFFICIELLE =====
       const inputSource = new mindee.PathInput({ inputPath: imageOptimisee });
-      
-      // Paramètres V2 : on passe le modelId directement
+
+      // ExtractionParameters V2 : modelId est le seul paramètre obligatoire
       const modelParams = {
         modelId: MINDEE_MODEL_ID,
       };
@@ -141,20 +142,22 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
         modelParams
       );
 
-      // Récupération des champs extraits
-      const fields = response.inference?.result?.fields || {};
-      const toutesLesValeurs = JSON.stringify(response.inference);
-      console.log(`📄 Réponse Mindee (${code}) :`, toutesLesValeurs.slice(0, 500));
+      console.log(`📄 Réponse Mindee brute :`, JSON.stringify(response.inference).slice(0, 800));
 
-      // Extraction du champ "etablissement_scolaire"
+      // Accès aux champs V2 : response.inference.result.fields
+      const fields = response.inference?.result?.fields || {};
+      console.log(`🏫 Champs extraits :`, JSON.stringify(fields).slice(0, 400));
+
+      // Extraction de la valeur du champ etablissement_scolaire
       let valeurExtraite = null;
       const etab = fields.etablissement_scolaire;
       if (etab) {
         if (typeof etab === 'string') valeurExtraite = etab;
         else if (etab.value) valeurExtraite = etab.value;
         else if (etab.stringValue) valeurExtraite = etab.stringValue;
+        else if (etab.content) valeurExtraite = etab.content;
         else if (Array.isArray(etab.values) && etab.values[0]) {
-          valeurExtraite = etab.values[0].content || etab.values[0].value;
+          valeurExtraite = etab.values[0].content || etab.values[0].value || etab.values[0];
         }
       }
 
@@ -164,10 +167,14 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
         lyceeTrouve = trouverLycee(valeurExtraite);
       }
       if (!lyceeTrouve) {
-        lyceeTrouve = trouverLycee(toutesLesValeurs);
+        // Fallback : cherche dans toute la réponse
+        lyceeTrouve = trouverLycee(JSON.stringify(response.inference));
       }
     } catch (mindeeErr) {
       console.error('❌ Erreur Mindee :', mindeeErr.message);
+      if (mindeeErr.response) {
+        console.error('Détails:', JSON.stringify(mindeeErr.response).slice(0, 300));
+      }
       erreurMindee = true;
     }
 
