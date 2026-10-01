@@ -4,20 +4,27 @@ const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
 const { Pool } = require('pg');
+const fetch = require('node-fetch');
+const FormData = require('form-data');
 
 sharp.cache(false);
 
 // ========== CONFIG ==========
 const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
 if (!process.env.DATABASE_URL) {
   console.error('❌ DATABASE_URL manquante.');
   process.exit(1);
 }
+if (!DISCORD_WEBHOOK_URL) {
+  console.warn('⚠️ DISCORD_WEBHOOK_URL manquante — les photos ne seront pas envoyées à Discord.');
+}
 
 console.log('🔧 Serveur de vérification initialisé');
 console.log(`📁 Dossier uploads : ${UPLOAD_DIR}`);
+console.log(`🔗 Webhook Discord : ${DISCORD_WEBHOOK_URL ? 'configuré' : 'non configuré'}`);
 
 // ========== POSTGRES ==========
 const pool = new Pool({
@@ -55,6 +62,58 @@ const upload = multer({
   }
 });
 
+// ========== ENVOI WEBHOOK DISCORD ==========
+async function envoyerDansModeration(code, imagePath, discordId, pseudo) {
+  if (!DISCORD_WEBHOOK_URL) {
+    console.warn('⚠️ Pas de webhook configuré, photo non envoyée à Discord.');
+    return false;
+  }
+
+  try {
+    const form = new FormData();
+
+    const embed = {
+      title: '🔍 Vérification à examiner',
+      color: 0xFEE75C,
+      fields: [
+        { name: 'Utilisateur', value: pseudo ? `${pseudo} (\`${discordId}\`)` : `\`${discordId}\``, inline: false },
+        { name: 'ID Discord', value: `\`${discordId}\``, inline: true },
+        { name: 'Code', value: `\`${code}\``, inline: true },
+      ],
+      image: { url: `attachment://carnet-${code}.jpg` },
+      footer: { text: 'Réponds avec ✅ pour approuver ou ❌ pour refuser' },
+      timestamp: new Date().toISOString(),
+    };
+
+    const payload = {
+      content: `📬 **Nouvelle vérification** — réponds avec ✅ ou ❌`,
+      embeds: [embed],
+    };
+
+    form.append('payload_json', JSON.stringify(payload));
+    form.append('file', fs.createReadStream(imagePath), {
+      filename: `carnet-${code}.jpg`,
+    });
+
+    const response = await fetch(DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      body: form,
+      headers: form.getHeaders(),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`HTTP ${response.status} — ${errText.slice(0, 200)}`);
+    }
+
+    console.log(`✅ Photo envoyée dans #moderation pour ${code}`);
+    return true;
+  } catch (err) {
+    console.error('❌ Erreur webhook Discord :', err.message);
+    return false;
+  }
+}
+
 // ========== APP ==========
 const app = express();
 app.use(express.json());
@@ -82,7 +141,7 @@ app.post('/api/verifier-code', async (req, res) => {
   }
 });
 
-// --- Route 2 : upload photo (100% manuel, pas d'IA) ---
+// --- Route 2 : upload photo + envoi immédiat dans #moderation ---
 app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ erreur: 'Aucun code fourni' });
@@ -99,7 +158,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       return res.status(400).json({ erreur: 'Code invalide.' });
     }
 
-    // Optimisation de l'image (compression, correction orientation)
+    // Optimisation de l'image
     const baseName = path.parse(req.file.filename).name;
     const imageOptimisee = path.join(UPLOAD_DIR, `opt-${baseName}.jpg`);
 
@@ -109,22 +168,41 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       .jpeg({ quality: 75 })
       .toFile(imageOptimisee);
 
-    // On supprime l'original (garde seulement l'optimisée)
+    // Supprime l'original
     try { fs.unlinkSync(req.file.path); } catch (e) {}
 
+    // Récupère le pseudo Discord de l'utilisateur
+    const pseudo = rows[0].discord_id ? `<@${rows[0].discord_id}>` : 'Inconnu';
+
+    // Marque comme "en modération"
     await pool.query(
       'UPDATE verifications SET photo_path = $1, a_moderer = 1, lycee = $2 WHERE code = $3',
       [imageOptimisee, 'En attente', code.toUpperCase().trim()]
     );
 
-    console.log(`📸 Photo reçue pour ${code} — en attente de modération`);
-    console.log(`   Fichier : ${imageOptimisee}`);
+    console.log(`📸 Photo reçue pour ${code} — envoi à Discord...`);
 
-    return res.json({
-      succes: true,
-      moderation: true,
-      message: '✅ Photo reçue. Un modérateur va vérifier ton carnet manuellement (généralement sous quelques minutes à quelques heures).',
-    });
+    // Envoie immédiatement dans #moderation via webhook
+    const envoye = await envoyerDansModeration(
+      code.toUpperCase().trim(),
+      imageOptimisee,
+      rows[0].discord_id,
+      pseudo
+    );
+
+    if (envoye) {
+      return res.json({
+        succes: true,
+        moderation: true,
+        message: '✅ Photo envoyée ! Un modérateur va vérifier ton carnet très bientôt.',
+      });
+    } else {
+      return res.json({
+        succes: true,
+        moderation: true,
+        message: '⚠️ Photo reçue mais erreur d\'envoi. Contacte un modérateur.',
+      });
+    }
   } catch (err) {
     console.error('❌ Erreur upload :', err);
     try { fs.unlinkSync(req.file.path); } catch (e) {}
@@ -132,31 +210,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   }
 });
 
-// --- Route 3 : exposer une photo au bot (appelée par le bot) ---
-app.get('/photo/:code', async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      'SELECT photo_path FROM verifications WHERE code = $1',
-      [req.params.code.toUpperCase().trim()]
-    );
-
-    if (!rows[0] || !rows[0].photo_path) {
-      return res.status(404).send('Photo introuvable');
-    }
-
-    const filePath = rows[0].photo_path;
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).send('Fichier introuvable');
-    }
-
-    res.sendFile(filePath);
-  } catch (err) {
-    console.error('Erreur /photo :', err);
-    res.status(500).send('Erreur serveur');
-  }
-});
-
-// --- Route 4 : supprimer une photo (appelée par le bot après refus) ---
+// --- Route 3 : supprimer une photo (appelée par le bot après refus) ---
 app.delete('/api/supprimer-photo/:code', async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -175,7 +229,7 @@ app.delete('/api/supprimer-photo/:code', async (req, res) => {
   }
 });
 
-// --- Route santé (utile pour Railway) ---
+// --- Route santé ---
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 // ========== DEMARRAGE ==========
