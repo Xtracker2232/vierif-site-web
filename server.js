@@ -130,7 +130,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       const inputSource = new mindee.PathInput({ inputPath: imageOptimisee });
       const modelParams = { modelId: MINDEE_MODEL_ID };
 
-      // Appel V2 avec ClassificationResponse (modèle de type classification)
+      // Appel V2 avec Classification
       const response = await mindeeClient.enqueueAndGetResult(
         mindee.product.Classification,
         inputSource,
@@ -139,7 +139,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
 
       console.log(`📄 Réponse Mindee brute :`, JSON.stringify(response.inference).slice(0, 800));
 
-      // Extraction du résultat de classification
+      // Structure de réponse Classification
       const classification = response.inference?.result?.classification;
       const documentType = classification?.documentType || classification?.document_type;
       console.log(`🏫 Classification Mindee :`, documentType);
