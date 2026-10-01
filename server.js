@@ -96,7 +96,7 @@ app.post('/api/verifier-code', async (req, res) => {
   }
 });
 
-// --- Route 2 : upload photo + Mindee V2 ---
+// --- Route 2 : upload photo + Mindee V2 Classification ---
 app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ erreur: 'Aucun code fourni' });
@@ -121,50 +121,31 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       .jpeg({ quality: 85 })
       .toFile(imageOptimisee);
 
-    console.log(`📤 Envoi à Mindee V2 (code ${code})...`);
+    console.log(`📤 Envoi à Mindee V2 Classification (code ${code})...`);
 
     let lyceeTrouve = null;
     let erreurMindee = false;
 
     try {
-      // ===== MINDEE V2 - MÉTHODE OFFICIELLE =====
       const inputSource = new mindee.PathInput({ inputPath: imageOptimisee });
+      const modelParams = { modelId: MINDEE_MODEL_ID };
 
-      // ExtractionParameters V2 : modelId est le seul paramètre obligatoire
-      const modelParams = {
-        modelId: MINDEE_MODEL_ID,
-      };
-
-      // Appel V2 avec ExtractionResponse
+      // Appel V2 avec ClassificationResponse (modèle de type classification)
       const response = await mindeeClient.enqueueAndGetResult(
-        mindee.product.Extraction,
+        mindee.product.Classification,
         inputSource,
         modelParams
       );
 
       console.log(`📄 Réponse Mindee brute :`, JSON.stringify(response.inference).slice(0, 800));
 
-      // Accès aux champs V2 : response.inference.result.fields
-      const fields = response.inference?.result?.fields || {};
-      console.log(`🏫 Champs extraits :`, JSON.stringify(fields).slice(0, 400));
+      // Extraction du résultat de classification
+      const classification = response.inference?.result?.classification;
+      const documentType = classification?.documentType || classification?.document_type;
+      console.log(`🏫 Classification Mindee :`, documentType);
 
-      // Extraction de la valeur du champ etablissement_scolaire
-      let valeurExtraite = null;
-      const etab = fields.etablissement_scolaire;
-      if (etab) {
-        if (typeof etab === 'string') valeurExtraite = etab;
-        else if (etab.value) valeurExtraite = etab.value;
-        else if (etab.stringValue) valeurExtraite = etab.stringValue;
-        else if (etab.content) valeurExtraite = etab.content;
-        else if (Array.isArray(etab.values) && etab.values[0]) {
-          valeurExtraite = etab.values[0].content || etab.values[0].value || etab.values[0];
-        }
-      }
-
-      console.log(`🏫 Lycée extrait :`, valeurExtraite);
-
-      if (valeurExtraite) {
-        lyceeTrouve = trouverLycee(valeurExtraite);
+      if (documentType) {
+        lyceeTrouve = trouverLycee(documentType);
       }
       if (!lyceeTrouve) {
         // Fallback : cherche dans toute la réponse
@@ -173,7 +154,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
     } catch (mindeeErr) {
       console.error('❌ Erreur Mindee :', mindeeErr.message);
       if (mindeeErr.response) {
-        console.error('Détails:', JSON.stringify(mindeeErr.response).slice(0, 300));
+        console.error('Détails:', JSON.stringify(mindeeErr.response).slice(0, 400));
       }
       erreurMindee = true;
     }
