@@ -96,7 +96,7 @@ app.post('/api/verifier-code', async (req, res) => {
   }
 });
 
-// --- Route 2 : upload photo + Mindee V2 Classification ---
+// --- Route 2 : upload photo + Mindee V2 Extraction ---
 app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ erreur: 'Aucun code fourni' });
@@ -121,7 +121,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       .jpeg({ quality: 85 })
       .toFile(imageOptimisee);
 
-    console.log(`📤 Envoi à Mindee V2 Classification (code ${code})...`);
+    console.log(`📤 Envoi à Mindee V2 Extraction (code ${code})...`);
 
     let lyceeTrouve = null;
     let erreurMindee = false;
@@ -130,22 +130,45 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       const inputSource = new mindee.PathInput({ inputPath: imageOptimisee });
       const modelParams = { modelId: MINDEE_MODEL_ID };
 
-      // Appel V2 avec Classification
+      // Appel V2 avec Extraction (ton modèle est un modèle d'extraction
+      // qui contient un champ de type classification en interne)
       const response = await mindeeClient.enqueueAndGetResult(
-        mindee.product.Classification,
+        mindee.product.Extraction,
         inputSource,
         modelParams
       );
 
-      console.log(`📄 Réponse Mindee brute :`, JSON.stringify(response.inference).slice(0, 800));
+      console.log(`📄 Réponse Mindee brute :`, JSON.stringify(response.inference).slice(0, 1200));
 
-      // Structure de réponse Classification
-      const classification = response.inference?.result?.classification;
-      const documentType = classification?.documentType || classification?.document_type;
-      console.log(`🏫 Classification Mindee :`, documentType);
+      // Extraction du champ etablissement_scolaire (plusieurs chemins possibles selon structure)
+      let valeurExtraite = null;
+      const r = response.inference?.result || {};
+      const fields = r.fields || {};
 
-      if (documentType) {
-        lyceeTrouve = trouverLycee(documentType);
+      // Cas 1 : valeur directe dans fields.etablissement_scolaire
+      let etab = fields.etablissement_scolaire;
+
+      // Cas 2 : valeur dans fields.fields.etablissement_scolaire
+      if (!etab && fields.fields) etab = fields.fields.etablissement_scolaire;
+
+      // Cas 3 : dans prediction.fields
+      if (!etab && r.prediction?.fields) etab = r.prediction.fields.etablissement_scolaire;
+
+      if (etab) {
+        if (typeof etab === 'string') valeurExtraite = etab;
+        else if (etab.value) valeurExtraite = etab.value;
+        else if (etab.stringValue) valeurExtraite = etab.stringValue;
+        else if (etab.content) valeurExtraite = etab.content;
+        else if (Array.isArray(etab.values) && etab.values[0]) {
+          const v = etab.values[0];
+          valeurExtraite = v.content || v.value || v.stringValue || (typeof v === 'string' ? v : null);
+        }
+      }
+
+      console.log(`🏫 Lycée extrait :`, valeurExtraite);
+
+      if (valeurExtraite) {
+        lyceeTrouve = trouverLycee(valeurExtraite);
       }
       if (!lyceeTrouve) {
         // Fallback : cherche dans toute la réponse
