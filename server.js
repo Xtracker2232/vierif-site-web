@@ -6,6 +6,9 @@ const sharp = require('sharp');
 const { Pool } = require('pg');
 const { Client: MindeeClient } = require('mindee');
 
+// Désactive le cache de sharp (évite des erreurs de fichiers)
+sharp.cache(false);
+
 // ========== CONFIG ==========
 const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
@@ -29,6 +32,7 @@ const mindeeClient = new MindeeClient({
 });
 
 const MINDEE_MODEL_ID = process.env.MINDEE_MODEL_ID;
+const MINDEE_ACCOUNT_NAME = process.env.MINDEE_ACCOUNT_NAME || '';
 
 // ========== POSTGRES ==========
 const pool = new Pool({
@@ -36,7 +40,6 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-// Création de la table au démarrage
 (async () => {
   try {
     await pool.query(`
@@ -153,8 +156,10 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       return res.status(400).json({ erreur: 'Code invalide ou déjà utilisé.' });
     }
 
-    // Optimisation de l'image avant envoi à Mindee
-    imageOptimisee = path.join(UPLOAD_DIR, `opt-${req.file.filename}.jpg`);
+    // Optimisation de l'image
+    const baseName = path.parse(req.file.filename).name;
+    imageOptimisee = path.join(UPLOAD_DIR, `opt-${baseName}.jpg`);
+
     await sharp(req.file.path)
       .rotate()
       .resize({ width: 2000, withoutEnlargement: true })
@@ -163,19 +168,40 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
 
     console.log(`📤 Envoi à Mindee (code ${code})...`);
 
-    // Appel Mindee avec le modèle personnalisé
-    const response = await mindeeClient.parse(
-      require('mindee').product.CustomV1,
-      { inputSource: fs.createReadStream(imageOptimisee) },
-      { endpointName: MINDEE_MODEL_ID }
-    );
+    // Variable pour stocker le lycée trouvé
+    let lyceeTrouve = null;
+    let erreurMindee = false;
 
-    const toutesLesValeurs = JSON.stringify(response.document);
-    console.log(`📄 Réponse Mindee (${code}) :`, toutesLesValeurs.slice(0, 500));
+    try {
+      // Prépare le stream en gérant l'erreur
+      const stream = fs.createReadStream(imageOptimisee);
+      stream.on('error', (err) => {
+        console.error('Erreur stream:', err);
+      });
 
-    const lyceeTrouve = trouverLycee(toutesLesValeurs);
+      // Paramètres de l'appel Mindee
+      const mindeeOptions = { endpointName: MINDEE_MODEL_ID };
+      if (MINDEE_ACCOUNT_NAME) {
+        mindeeOptions.accountName = MINDEE_ACCOUNT_NAME;
+      }
+
+      const response = await mindeeClient.parse(
+        require('mindee').product.CustomV1,
+        { inputSource: stream },
+        mindeeOptions
+      );
+
+      const toutesLesValeurs = JSON.stringify(response.document);
+      console.log(`📄 Réponse Mindee (${code}) :`, toutesLesValeurs.slice(0, 500));
+
+      lyceeTrouve = trouverLycee(toutesLesValeurs);
+    } catch (mindeeErr) {
+      console.error('❌ Erreur Mindee :', mindeeErr.message);
+      erreurMindee = true;
+    }
 
     if (lyceeTrouve) {
+      // ✅ Validation automatique
       await pool.query(
         'UPDATE verifications SET valide = 1, lycee = $1 WHERE code = $2',
         [lyceeTrouve, code.toUpperCase().trim()]
@@ -191,15 +217,19 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       });
     }
 
-    // Modération manuelle
+    // ❌ Envoi en modération manuelle
     await pool.query(
       'UPDATE verifications SET photo_path = $1, a_moderer = 1, lycee = $2 WHERE code = $3',
-      [req.file.path, 'En attente', code.toUpperCase().trim()]
+      [
+        req.file.path,
+        erreurMindee ? 'Erreur analyse' : 'En attente',
+        code.toUpperCase().trim(),
+      ]
     );
 
     try { fs.unlinkSync(imageOptimisee); } catch (e) {}
 
-    console.log(`⚠️ Aucun lycée reconnu - modération pour ${code}`);
+    console.log(`⚠️ Envoi en modération pour ${code} (raison: ${erreurMindee ? 'erreur Mindee' : 'aucun lycée reconnu'})`);
     return res.json({
       succes: true,
       moderation: true,
@@ -208,7 +238,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
         '(généralement sous quelques heures).',
     });
   } catch (err) {
-    console.error('❌ Erreur Mindee :', err);
+    console.error('❌ Erreur générale :', err);
     try { fs.unlinkSync(req.file.path); } catch (e) {}
     if (imageOptimisee) try { fs.unlinkSync(imageOptimisee); } catch (e) {}
     return res.status(500).json({ erreur: 'Erreur lors du traitement de la photo.' });
