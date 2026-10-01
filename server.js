@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 
 if (!process.env.DATABASE_URL) {
-  console.error('❌ DATABASE_URL manquante. Ajoute PostgreSQL au projet Railway.');
+  console.error('❌ DATABASE_URL manquante.');
   process.exit(1);
 }
 
@@ -134,7 +134,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       return res.status(400).json({ erreur: 'Code invalide ou déjà utilisé.' });
     }
 
-    // Prétraitement pour améliorer l'OCR
+    // Prétraitement
     imageTraitee = path.join(UPLOAD_DIR, `traite-${req.file.filename}.png`);
     await sharp(req.file.path)
       .resize({ width: 1600, withoutEnlargement: true })
@@ -143,7 +143,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       .sharpen()
       .toFile(imageTraitee);
 
-    // OCR français
+    // OCR
     const { data: { text } } = await Tesseract.recognize(imageTraitee, 'fra');
     console.log(`📄 OCR (${code}) :`, text.slice(0, 200).replace(/\n/g, ' '));
 
@@ -165,7 +165,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
       });
     }
 
-    // OCR n'a rien trouvé → modération manuelle
+    // Modération manuelle
     await pool.query(
       'UPDATE verifications SET photo_path = $1, a_moderer = 1 WHERE code = $2',
       [req.file.path, code.toUpperCase().trim()]
@@ -173,7 +173,7 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
 
     if (imageTraitee) try { fs.unlinkSync(imageTraitee); } catch (e) {}
 
-    console.log(`⚠️ Aucun lycée reconnu — modération pour ${code}`);
+    console.log(`⚠️ Aucun lycée reconnu - modération pour ${code}`);
     return res.json({
       succes: true,
       moderation: true,
@@ -213,7 +213,7 @@ app.get('/photo/:code', async (req, res) => {
   }
 });
 
-// --- Route santé (utile pour Railway) ---
+// --- Route santé ---
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 // ========== DEMARRAGE ==========

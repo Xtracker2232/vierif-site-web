@@ -1,7 +1,7 @@
 {
   "name": "verif-police-site",
   "version": "1.0.0",
-  "description": "Site de vérification — Lycées Léon Chiris, Amiral de Grasse, Decroisset",
+  "description": "Site de vérification - Lycées Léon Chiris, Amiral de Grasse, Decroisset",
   "main": "server.js",
   "scripts": {
     "start": "node --no-warnings server.js"
