@@ -189,6 +189,30 @@ app.post('/api/verifier-photo', upload.single('photo'), async (req, res) => {
   }
 });
 
+// --- Route 3 : exposer une photo au bot ---
+app.get('/photo/:code', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT photo_path FROM verifications WHERE code = $1',
+      [req.params.code.toUpperCase().trim()]
+    );
+
+    if (!rows[0] || !rows[0].photo_path) {
+      return res.status(404).send('Photo introuvable');
+    }
+
+    const filePath = rows[0].photo_path;
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).send('Fichier introuvable');
+    }
+
+    res.sendFile(filePath);
+  } catch (err) {
+    console.error('Erreur /photo :', err);
+    res.status(500).send('Erreur serveur');
+  }
+});
+
 // --- Route santé (utile pour Railway) ---
 app.get('/health', (req, res) => res.json({ ok: true }));
 
